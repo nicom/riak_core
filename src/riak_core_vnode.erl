@@ -153,7 +153,15 @@ active(handoff_complete, State=#state{mod=Mod,
     Mod:handoff_finished(HN, ModState),
     {ok, NewModState} = Mod:delete(ModState),
     riak_core_handoff_manager:add_exclusion(Mod, Idx),
-    {stop, normal, State#state{modstate=NewModState, handoff_node=none}}.
+    {stop, normal, State#state{modstate=NewModState, handoff_node=none}};
+
+active(handoff_failed, State=#state{mod=Mod, 
+                                    modstate=ModState,
+                                    index=Idx, 
+                                    handoff_token=HT}) ->
+    riak_core_handoff_manager:release_handoff_lock({Mod, Idx}, HT),
+    {ok, NewModState} = Mod:handoff_cancelled(ModState),
+    {next_state, active, State#state{modstate=NewModState, handoff_node=none}, ?DEFAULT_TIMEOUT}.
 
 active(_Event, _From, State) ->
     Reply = ok,

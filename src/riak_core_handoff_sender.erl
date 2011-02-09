@@ -73,7 +73,8 @@ start_fold(TargetNode, Module, Partition, ParentPid) ->
      catch
          Err:Reason ->
              error_logger:error_msg("Handoff sender ~p ~p failed ~p:~p\n", 
-                                    [Module, Partition, Err,Reason])
+                                    [Module, Partition, Err,Reason]),
+             gen_fsm:send_event(ParentPid, handoff_failed)
      end.
 
 visit_item(K, V, {Socket, ParentPid, Module, ?ACK_COUNT, Total}) ->
