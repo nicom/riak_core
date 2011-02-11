@@ -71,9 +71,38 @@ ensure_vnodes_started([], _Ring, Acc) ->
 ensure_vnodes_started([H|T], Ring, Acc) ->
     ensure_vnodes_started(T, Ring, [ensure_vnodes_started(H, Ring)|Acc]).
 
+
+pforeach(F, L) ->
+    S = self(),
+    Ref = make_ref(),
+    Parts = partition_list(L, length(L) div 4, length(L) rem 4, []),
+    Pids = lists:map(fun(I) -> spawn(fun() -> pforeach_f(Ref, S, F, I) end) end, Parts),
+    pforeach_gather(Ref, Pids).
+
+partition_list([], _, _, Acc) ->
+   Acc;
+partition_list(L, PartLen, 0, Acc) ->
+   {Part, Rest} = lists:split(PartLen, L),
+   partition_list(Rest, PartLen, 0, [Part|Acc]);
+partition_list(L, PartLen, Remainder, Acc) ->
+   {Part, Rest} = lists:split(PartLen+1, L),
+   partition_list(Rest, PartLen, Remainder-1, [Part|Acc]).
+
+pforeach_gather(Ref, [H|T]) ->
+   receive
+     {Ref, H} -> pforeach_gather(Ref, T)
+   end;
+pforeach_gather(_Ref, []) ->
+   [].
+   
+pforeach_f(Ref, Parent, F, I) ->
+    _ = (catch lists:foreach(F,I)),
+    Parent ! {Ref, self()}.
+    
+
 ensure_vnodes_started(Mod, Ring) ->
     Startable = startable_vnodes(Mod, Ring),
-    [Mod:start_vnode(I) || I <- Startable],
+    pforeach(fun(E) -> error_logger:info_msg("Starting Vnode ~p",[E]), Mod:start_vnode(E) end, Startable),
     Startable.
 
 startable_vnodes(Mod, Ring) ->
