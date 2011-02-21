@@ -58,12 +58,12 @@ handle_info({tcp_error, _Socket, _Reason}, State=#state{partition=Partition,coun
     error_logger:info_msg("Handoff receiver for partition ~p exiting after processing ~p"
                           " objects~n", [Partition, Count]),
     {stop, normal, State};
-handle_info({tcp, Socket, Data}, State) ->
+handle_info({tcp, Socket, Data}, State=#state{partition=Partition,count=Count}) ->
     [MsgType|MsgData] = Data,
     case catch(process_message(MsgType, MsgData, State)) of
         {'EXIT', Reason} ->
             error_logger:error_msg("Handoff receiver for partition ~p exiting abnormally after "
-                                   "processing ~p objects: ~p\n", [State#state.count, Reason]),
+                                   "processing ~p objects: ~p\n", [Partition, Count, Reason]),
             {stop, normal, State};
         NewState when is_record(NewState, state) ->
             inet:setopts(Socket, [{active, once}]),
