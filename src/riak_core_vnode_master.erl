@@ -143,7 +143,7 @@ handle_cast({Partition, start_vnode}, State=#state{excl=Excl}) ->
     {noreply, State#state{excl=ordsets:del_element(Partition, Excl)}};    
 handle_cast(Req=?VNODE_REQ{index=Idx}, State) ->
     Pid = get_vnode(Idx, State),
-    gen_fsm:send_event(Pid, Req),
+    gen_server2:cast(Pid, Req),
     {noreply, State};
 handle_cast(Other, State=#state{legacy=Legacy}) when Legacy =/= undefined ->
     case catch Legacy:rewrite_cast(Other) of
@@ -155,14 +155,14 @@ handle_cast(Other, State=#state{legacy=Legacy}) when Legacy =/= undefined ->
 
 handle_call(Req=?VNODE_REQ{index=Idx, sender={server, undefined, undefined}}, From, State) ->
     Pid = get_vnode(Idx, State),
-    gen_fsm:send_event(Pid, Req?VNODE_REQ{sender={server, undefined, From}}),
+    gen_server2:cast(Pid, Req?VNODE_REQ{sender={server, undefined, From}}),
     {noreply, State};
 handle_call({spawn, 
              Req=?VNODE_REQ{index=Idx, sender={server, undefined, undefined}}}, From, State) ->
     Pid = get_vnode(Idx, State),
     Sender = {server, undefined, From},
     spawn(
-      fun() -> gen_fsm:send_all_state_event(Pid, Req?VNODE_REQ{sender=Sender}) end),
+      fun() -> gen_server2:cast(Pid, Req?VNODE_REQ{sender=Sender}) end),
     {noreply, State};
 handle_call(all_nodes, _From, State) ->
     {reply, lists:flatten(ets:match(State#state.idxtab, {idxrec, '_', '$1', '_'})), State};

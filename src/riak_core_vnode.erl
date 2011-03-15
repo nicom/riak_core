@@ -17,20 +17,18 @@
 %%
 %% -------------------------------------------------------------------
 -module(riak_core_vnode).
--behaviour(gen_fsm).
+-behaviour(gen_server2).
 -include_lib("riak_core_vnode.hrl").
 -export([behaviour_info/1]).
 -export([start_link/2,
          send_command/2,
          send_command_after/2]).
 -export([init/1, 
-         active/2, 
-         active/3, 
-         handle_event/3,
-         handle_sync_event/4, 
-         handle_info/3, 
-         terminate/3, 
-         code_change/4]).
+         handle_cast/2, 
+         handle_call/3, 
+         handle_info/2, 
+         terminate/2, 
+         code_change/3]).
 -export([reply/2]).
 -export([get_mod_index/1]).
 
@@ -62,18 +60,18 @@ behaviour_info(_Other) ->
           inactivity_timeout}).
 
 start_link(Mod, Index) ->
-    gen_fsm:start_link(?MODULE, [Mod, Index], []).
+    gen_server2:start_link(?MODULE, [Mod, Index], []).
 
 %% Send a command message for the vnode module by Pid - 
 %% typically to do some deferred processing after returning yourself
 send_command(Pid, Request) ->
-    gen_fsm:send_event(Pid, ?VNODE_REQ{request=Request}).
+    gen_server2:cast(Pid, ?VNODE_REQ{request=Request}).
 
 %% Sends a command to the FSM that called it after Time 
 %% has passed.
 -spec send_command_after(integer(), term()) -> reference().
 send_command_after(Time, Request) ->
-    gen_fsm:send_event_after(Time, ?VNODE_REQ{request=Request}).
+    timer:apply_after(Time, gen_server2, cast, [self(), ?VNODE_REQ{request=Request}]).
     
 
 init([Mod, Index]) ->
@@ -82,14 +80,13 @@ init([Mod, Index]) ->
     {ok, ModState} = Mod:init([Index]),
     riak_core_handoff_manager:remove_exclusion(Mod, Index),
     Timeout = app_helper:get_env(riak_core, vnode_inactivity_timeout, ?DEFAULT_TIMEOUT),
-    {ok, active, #state{index=Index, mod=Mod, modstate=ModState,
-                        inactivity_timeout=Timeout}, 0}.
+    {ok, #state{index=Index, mod=Mod, modstate=ModState, inactivity_timeout=Timeout}, 0}.
 
 get_mod_index(VNode) ->
-    gen_fsm:sync_send_all_state_event(VNode, get_mod_index).
+    gen_server2:call(VNode, get_mod_index).
 
 continue(State) ->
-    {next_state, active, State, State#state.inactivity_timeout}.
+    {noreply, State, State#state.inactivity_timeout}.
 
 continue(State, NewModState) ->
     continue(State#state{modstate=NewModState}).
@@ -118,8 +115,7 @@ vnode_handoff_command(Sender, Request, WrapperReq,
         {noreply, NewModState} ->
             continue(State, NewModState);
         {forward, NewModState} ->
-            riak_core_vnode_master:command({Index, HN}, WrapperReq, Sender, 
-                                           riak_core_vnode_master:reg_name(Mod)),
+            riak_core_vnode_master:command({Index, HN}, WrapperReq, Sender, riak_core_vnode_master:reg_name(Mod)),
             continue(State, NewModState);
         {drop, NewModState} ->
             continue(State, NewModState);
@@ -127,24 +123,12 @@ vnode_handoff_command(Sender, Request, WrapperReq,
             {stop, Reason, State#state{modstate=NewModState}}
     end.
 
-active(timeout, State=#state{mod=Mod, modstate=ModState}) ->
-    case should_handoff(State) of
-        {true, TargetNode} ->
-            case Mod:handoff_starting(TargetNode, ModState) of
-                {true, NewModState} ->
-                    start_handoff(State#state{modstate=NewModState}, TargetNode);
-                {false, NewModState} ->
-                    continue(State, NewModState)
-            end;
-        false ->
-            continue(State)
-    end;
-active(?VNODE_REQ{sender=Sender, request=Request},
+handle_cast(?VNODE_REQ{sender=Sender, request=Request},
        State=#state{handoff_node=HN}) when HN =:= none ->
     vnode_command(Sender, Request, State);
-active(VR=?VNODE_REQ{sender=Sender, request=Request},State) ->
+handle_cast(VR=?VNODE_REQ{sender=Sender, request=Request},State) ->
     vnode_handoff_command(Sender, Request, VR, State);
-active(handoff_complete, State=#state{mod=Mod, 
+handle_cast(handoff_complete, State=#state{mod=Mod, 
                                       modstate=ModState,
                                       index=Idx, 
                                       handoff_node=HN,
@@ -155,45 +139,44 @@ active(handoff_complete, State=#state{mod=Mod,
     riak_core_handoff_manager:add_exclusion(Mod, Idx),
     {stop, normal, State#state{modstate=NewModState, handoff_node=none}};
 
-active(handoff_failed, State=#state{mod=Mod, 
+handle_cast(handoff_failed, State=#state{mod=Mod, 
                                     modstate=ModState,
                                     index=Idx, 
                                     handoff_token=HT}) ->
     riak_core_handoff_manager:release_handoff_lock({Mod, Idx}, HT),
     {ok, NewModState} = Mod:handoff_cancelled(ModState),
-    {next_state, active, State#state{modstate=NewModState, handoff_node=none}, ?DEFAULT_TIMEOUT}.
+    continue(State#state{modstate=NewModState, handoff_node=none}).
 
-active(_Event, _From, State) ->
-    Reply = ok,
-    {reply, Reply, active, State, State#state.inactivity_timeout}.
-
-handle_event(R=?VNODE_REQ{}, _StateName, State) ->
-    active(R, State).
-
-handle_sync_event(get_mod_index, _From, StateName,
-                  State=#state{index=Idx,mod=Mod}) ->
-    {reply, {Mod, Idx}, StateName, State, State#state.inactivity_timeout};
-handle_sync_event({handoff_data,BinObj}, _From, StateName, 
-                  State=#state{mod=Mod, modstate=ModState}) ->
+handle_call(get_mod_index, _From, State=#state{index=Idx,mod=Mod}) ->
+    {reply, {Mod, Idx}, State, State#state.inactivity_timeout};
+handle_call({handoff_data,BinObj}, _From, State=#state{mod=Mod, modstate=ModState}) ->
     case Mod:handle_handoff_data(BinObj, ModState) of
         {reply, ok, NewModState} ->
-            {reply, ok, StateName, State#state{modstate=NewModState},
-             State#state.inactivity_timeout};
+            {reply, ok, State#state{modstate=NewModState}, State#state.inactivity_timeout};
         {reply, {error, Err}, NewModState} ->
             error_logger:error_msg("Error storing handoff obj: ~p~n", [Err]),            
-            {reply, {error, Err}, StateName, State#state{modstate=NewModState}, 
-             State#state.inactivity_timeout}
+            {reply, {error, Err}, State#state{modstate=NewModState}, State#state.inactivity_timeout}
     end.
 
-handle_info(_Info, StateName, State) ->
-    {next_state, StateName, State, State#state.inactivity_timeout}.
+handle_info(timeout, State=#state{mod=Mod, modstate=ModState}) ->
+    case should_handoff(State) of
+        {true, TargetNode} ->
+            case Mod:handoff_starting(TargetNode, ModState) of
+                {true, NewModState} ->
+                    start_handoff(State#state{modstate=NewModState}, TargetNode);
+                {false, NewModState} ->
+                    continue(State, NewModState)
+            end;
+        false ->
+            continue(State)
+    end.
 
-terminate(Reason, _StateName, #state{mod=Mod, modstate=ModState}) ->
+terminate(Reason, #state{mod=Mod, modstate=ModState}) ->
     Mod:terminate(Reason, ModState),
     ok.
 
-code_change(_OldVsn, StateName, State, _Extra) ->
-    {ok, StateName, State}.
+code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
 
 should_handoff(#state{index=Idx, mod=Mod}) ->
     {ok, Ring} = riak_core_ring_manager:get_my_ring(),
@@ -221,7 +204,7 @@ start_handoff(State=#state{index=Idx, mod=Mod, modstate=ModState}, TargetNode) -
                 {error, max_concurrency} ->
                     {ok, NewModState1} = Mod:handoff_cancelled(NewModState),
                     NewState = State#state{modstate=NewModState1},
-                    {next_state, active, NewState, ?LOCK_RETRY_TIMEOUT};
+                    {noreply, NewState, ?LOCK_RETRY_TIMEOUT};
                 {ok, {handoff_token, HandoffToken}} ->
                     NewState = State#state{modstate=NewModState, 
                                            handoff_token=HandoffToken,

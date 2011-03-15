@@ -68,13 +68,13 @@ start_fold(TargetNode, Module, Partition, ParentPid) ->
          error_logger:info_msg("Handoff of partition ~p ~p to ~p completed: sent ~p objects in ~.2f seconds", 
                                [Module, Partition, TargetNode, SentCount,
                                 timer:now_diff(EndFoldTime, StartFoldTime) / 1000000]),
-         gen_fsm:send_event(ParentPid, handoff_complete)
+         gen_server2:cast(ParentPid, handoff_complete)
          %% Socket will be closed when this process exits
      catch
          Err:Reason ->
              error_logger:error_msg("Handoff sender ~p ~p failed ~p:~p\n", 
                                     [Module, Partition, Err,Reason]),
-             gen_fsm:send_event(ParentPid, handoff_failed)
+             gen_server2:cast(ParentPid, handoff_failed)
      end.
 
 visit_item(K, V, {Socket, ParentPid, Module, ?ACK_COUNT, Total}) ->

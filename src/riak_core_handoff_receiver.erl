@@ -78,7 +78,7 @@ process_message(?PT_MSG_INIT, MsgData, State=#state{vnode_mod=VNodeMod}) ->
     State#state{partition=Partition, vnode=VNode};
 process_message(?PT_MSG_OBJ, MsgData, State=#state{vnode=VNode, count=Count}) ->
     Msg = {handoff_data, MsgData},
-    gen_fsm:sync_send_all_state_event(VNode, Msg, 60000),
+    gen_server2:call(VNode, Msg, 60000),
     State#state{count=Count+1};
 process_message(?PT_MSG_OLDSYNC, MsgData, State=#state{sock=Socket}) ->
     gen_tcp:send(Socket, <<?PT_MSG_OLDSYNC:8,"sync">>),
